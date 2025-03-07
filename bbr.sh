@@ -112,6 +112,90 @@ enable_bbr() {
     fi
 }
 
+# Tạo và cấu hình bộ nhớ swap
+setup_swap() {
+    print_info "Đang thiết lập bộ nhớ swap tự động..."
+    
+    # Kiểm tra xem swap đã tồn tại chưa
+    swap_exists=$(free | grep Swap | awk '{print $2}')
+    
+    if [ "$swap_exists" -gt "0" ]; then
+        print_info "Swap đã tồn tại ($(free -m | grep Swap | awk '{print $2}') MB)."
+        
+        read -p "Bạn có muốn xóa và tạo lại swap không? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return
+        else
+            # Tắt tất cả swap
+            swapoff -a
+            # Xóa các mục swap trong /etc/fstab
+            sed -i '/swap/d' /etc/fstab
+        fi
+    fi
+    
+    # Lấy thông tin RAM vật lý (tính bằng MB)
+    physical_ram=$(free -m | grep Mem | awk '{print $2}')
+    print_info "RAM vật lý phát hiện được: ${physical_ram} MB"
+    
+    # Tính toán kích thước swap dựa trên RAM vật lý
+    if [ "$physical_ram" -le "2048" ]; then
+        # Nếu RAM <= 2GB, swap = 2 * RAM
+        swap_size=$((physical_ram * 2))
+    elif [ "$physical_ram" -le "8192" ]; then
+        # Nếu RAM <= 8GB, swap = 1.5 * RAM
+        swap_size=$((physical_ram * 3 / 2))
+    elif [ "$physical_ram" -le "16384" ]; then
+        # Nếu RAM <= 16GB, swap = RAM
+        swap_size=$physical_ram
+    else
+        # Nếu RAM > 16GB, swap = 0.5 * RAM, tối đa 16GB
+        swap_size=$((physical_ram / 2))
+        if [ "$swap_size" -gt "16384" ]; then
+            swap_size=16384
+        fi
+    fi
+    
+    print_info "Kích thước swap được tính tự động: ${swap_size} MB"
+    
+    # Tạo file swap
+    print_info "Đang tạo file swap..."
+    dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    
+    # Thêm vào fstab để tự động kích hoạt khi khởi động
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+    fi
+    
+    # Cấu hình tham số swappiness và cache pressure dựa trên RAM
+    # Swappiness thấp hơn cho hệ thống có nhiều RAM
+    if [ "$physical_ram" -le "4096" ]; then
+        swappiness_value=30
+    elif [ "$physical_ram" -le "16384" ]; then
+        swappiness_value=20
+    else
+        swappiness_value=10
+    fi
+    
+    if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
+        echo "vm.swappiness = $swappiness_value" >> /etc/sysctl.conf
+    else
+        sed -i "s/^vm.swappiness.*/vm.swappiness = $swappiness_value/" /etc/sysctl.conf
+    fi
+    
+    if ! grep -q "vm.vfs_cache_pressure" /etc/sysctl.conf; then
+        echo "vm.vfs_cache_pressure = 50" >> /etc/sysctl.conf
+    fi
+    
+    # Áp dụng các thay đổi
+    sysctl -p
+    
+    print_info "Đã thiết lập swap thành công: $(free -m | grep Swap | awk '{print $2}') MB với swappiness = $swappiness_value"
+}
+
 # Tối ưu hóa hạn chế tài nguyên hệ thống
 optimize_limits() {
     print_info "Tối ưu hóa hạn chế tài nguyên hệ thống..."
@@ -243,6 +327,7 @@ generate_report() {
     echo "Kernel: $(uname -r)" >> $REPORT_FILE
     echo "CPU: $(grep -c processor /proc/cpuinfo) cores" >> $REPORT_FILE
     echo "RAM: $(free -h | grep Mem | awk '{print $2}')" >> $REPORT_FILE
+    echo "Swap: $(free -h | grep Swap | awk '{print $2}')" >> $REPORT_FILE
     echo "" >> $REPORT_FILE
     
     echo "=== CẤU HÌNH BBR ===" >> $REPORT_FILE
@@ -271,6 +356,10 @@ main() {
     # Bỏ qua việc nâng cấp hệ thống
     # update_system
     install_tools
+    
+    # Tự động thiết lập RAM ảo
+    setup_swap
+    
     enable_bbr
     optimize_limits
     optimize_network
