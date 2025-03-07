@@ -268,7 +268,8 @@ generate_report() {
 main() {
     print_info "Bắt đầu tối ưu hóa mạng VPS..."
     
-    update_system
+    # Bỏ qua việc nâng cấp hệ thống
+    # update_system
     install_tools
     enable_bbr
     optimize_limits
